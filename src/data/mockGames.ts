@@ -73,10 +73,22 @@ const TEAM_COLORS = [
   '#AF1E2D', '#D2001C', '#EF0107', '#034694', '#6CABDD', '#DA291C',
 ];
 
-function shuffle<T>(array: T[]): T[] {
+// Deterministic PRNG so every device generates the exact same matchups
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle<T>(array: T[], rng: () => number): T[] {
   const copy = [...array];
   for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rng() * (i + 1));
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
@@ -115,10 +127,14 @@ const GAME_SLOTS: {
   { id: 'game-21', league: 'Premier League', status: 'UPCOMING', clock: 'Kickoff 9:00 AM', homeScore: 0, awayScore: 0, totalPointsLine: 2.5, startTime: 'Sunday, 9:00 AM' },
 ];
 
-export function generateMockGames(): Game[] {
-  const cities = shuffle(CITIES);
-  const mascots = shuffle(PUNNY_MASCOTS);
-  const colors = shuffle(TEAM_COLORS);
+// Fixed seed keeps matchups identical across all devices and sessions
+const DEFAULT_SLATE_SEED = 20260420;
+
+export function generateMockGames(seed: number = DEFAULT_SLATE_SEED): Game[] {
+  const rng = mulberry32(seed);
+  const cities = seededShuffle(CITIES, rng);
+  const mascots = seededShuffle(PUNNY_MASCOTS, rng);
+  const colors = seededShuffle(TEAM_COLORS, rng);
 
   return GAME_SLOTS.map((slot, idx) => {
     const homeIdx = idx * 2;
