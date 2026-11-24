@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Award,
@@ -27,13 +27,76 @@ interface DaresDashboardProps {
   onRefresh: () => void;
 }
 
+/**
+ * Evaluates a FINAL game against challengerSide and opponentSide
+ * to determine who won and who lost automatically.
+ */
+function resolveGameOutcome(
+  dare: Dare,
+  game?: Game
+): {
+  winner: { uid: string; username: string };
+  loser: { uid: string; username: string };
+  scoreSummary: string;
+} | null {
+  if (!game || game.status !== 'FINAL') return null;
+
+  const homeScore = game.homeTeam.score;
+  const awayScore = game.awayTeam.score;
+  const totalScore = homeScore + awayScore;
+  const scoreSummary = `${game.awayTeam.abbr} ${awayScore} – ${homeScore} ${game.homeTeam.abbr} (Total: ${totalScore})`;
+
+  const challenger = { uid: dare.challengerId, username: dare.challengerUsername };
+  const opponent = { uid: dare.opponentId, username: dare.opponentUsername };
+
+  const cSide = dare.challengerSide.toLowerCase();
+  const oSide = dare.opponentSide.toLowerCase();
+
+  // 1. Over / Under Total Points
+  if (cSide.includes('over') || cSide.includes('under')) {
+    const isOver = totalScore > game.totalPointsLine;
+    const isUnder = totalScore < game.totalPointsLine;
+
+    if (isOver) {
+      return cSide.includes('over')
+        ? { winner: challenger, loser: opponent, scoreSummary }
+        : { winner: opponent, loser: challenger, scoreSummary };
+    }
+    if (isUnder) {
+      return cSide.includes('under')
+        ? { winner: challenger, loser: opponent, scoreSummary }
+        : { winner: opponent, loser: challenger, scoreSummary };
+    }
+    // Exact push fallback
+    return { winner: challenger, loser: opponent, scoreSummary };
+  }
+
+  // 2. Team Winner (matches team name or abbreviation)
+  const homeWon = homeScore > awayScore;
+  const homeName = game.homeTeam.name.toLowerCase();
+  const homeAbbr = game.homeTeam.abbr.toLowerCase();
+  const awayName = game.awayTeam.name.toLowerCase();
+  const awayAbbr = game.awayTeam.abbr.toLowerCase();
+
+  const challengerPickedHome =
+    cSide.includes(homeName) ||
+    cSide.includes(homeAbbr) ||
+    (!cSide.includes(awayName) && !cSide.includes(awayAbbr) && (oSide.includes(awayName) || oSide.includes(awayAbbr)));
+
+  const challengerWon = homeWon ? challengerPickedHome : !challengerPickedHome;
+
+  return challengerWon
+    ? { winner: challenger, loser: opponent, scoreSummary }
+    : { winner: opponent, loser: challenger, scoreSummary };
+}
+
 export const DaresDashboard: React.FC<DaresDashboardProps> = ({
   currentUser,
   dares,
   games,
   onRefresh,
 }) => {
-  const [subTab, setSubTab] = useState<'pending' | 'active' | 'completed'>('pending');
+  const [subTab, setSubTab] = useState<'pending' | 'active' | 'completed'>('active');
 
   // Counter-dare negotiation state
   const [counteringDareId, setCounteringDareId] = useState<string | null>(null);
@@ -44,6 +107,34 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
   const [proofText, setProofText] = useState('');
   const [proofImageUrl, setProofImageUrl] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // Prevent duplicate auto-settlement calls for the same dare
+  const autoSettledIds = useRef<Set<string>>(new Set());
+
+  // Automatically lock in winner & loser in Supabase as soon as a linked game is FINAL
+  useEffect(() => {
+    const unsettledFinals = dares.filter((d) => d.status === 'active' && !d.loserId);
+    if (unsettledFinals.length === 0) return;
+
+    let didUpdate = false;
+    (async () => {
+      for (const dare of unsettledFinals) {
+        if (autoSettledIds.current.has(dare.id)) continue;
+        const linkedGame = games.find((g) => g.id === dare.gameId);
+        const outcome = resolveGameOutcome(dare, linkedGame);
+        if (outcome) {
+          autoSettledIds.current.add(dare.id);
+          try {
+            await dareService.declareLoser(dare, outcome.loser);
+            didUpdate = true;
+          } catch {
+            autoSettledIds.current.delete(dare.id);
+          }
+        }
+      }
+      if (didUpdate) onRefresh();
+    })();
+  }, [dares, games, onRefresh]);
 
   const pendingDares = dares.filter((d) => d.status === 'pending');
   const activeDares = dares.filter(
@@ -127,7 +218,6 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
         proofText,
         proofImageUrl,
       });
-      // If playing against a seeded bot, auto-verify so single-player testing also completes smoothly
       const opponentId =
         dare.challengerId === currentUser.uid ? dare.opponentId : dare.challengerId;
       if (opponentId.startsWith('bot-')) {
@@ -182,7 +272,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-white">My Dares & Punishments</h1>
           <p className="text-sm text-slate-400">
-            Accept challenges, lock in match losers, and verify proof to earn Dare Kept badges.
+            Accept challenges, track match results, and verify proof to earn Dare Kept badges.
           </p>
         </div>
 
@@ -247,17 +337,29 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
             const linkedGame = games.find((g) => g.id === dare.gameId);
             const isGameFinal = linkedGame?.status === 'FINAL';
 
-            const isCurrentUserLoser = dare.loserId === currentUser.uid;
-            const isCurrentUserWinner = dare.winnerId === currentUser.uid;
+            // Use stored winner/loser if already saved, or compute immediately from FINAL game
+            const computedOutcome = resolveGameOutcome(dare, linkedGame);
+            const effectiveLoserId = dare.loserId ?? computedOutcome?.loser.uid;
+            const effectiveLoserUsername =
+              dare.loserUsername ?? computedOutcome?.loser.username;
+            const effectiveWinnerId = dare.winnerId ?? computedOutcome?.winner.uid;
+            const effectiveWinnerUsername =
+              dare.winnerUsername ?? computedOutcome?.winner.username;
+
+            const isCurrentUserLoser = effectiveLoserId === currentUser.uid;
+            const isCurrentUserWinner = effectiveWinnerId === currentUser.uid;
+            const hasOutcome = Boolean(effectiveLoserId && effectiveWinnerId);
 
             return (
               <div
                 key={dare.id}
                 className={`flex flex-col justify-between rounded-2xl border p-5 transition ${
-                  dare.status === 'pending' && isRecipient
+                  hasOutcome && dare.status !== 'pending'
+                    ? isCurrentUserWinner
+                      ? 'border-emerald-500/60 bg-slate-900 shadow-lg shadow-emerald-950/30'
+                      : 'border-rose-500/60 bg-slate-900 shadow-lg shadow-rose-950/30'
+                    : dare.status === 'pending' && isRecipient
                     ? 'border-emerald-500/50 bg-slate-900 shadow-lg shadow-emerald-950/20'
-                    : dare.status === 'proof_submitted'
-                    ? 'border-amber-500/50 bg-slate-900'
                     : 'border-slate-800 bg-slate-900/85'
                 }`}
               >
@@ -282,8 +384,20 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                     )}
 
                     {dare.status === 'active' && (
-                      <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-emerald-400 ring-1 ring-emerald-500/30">
-                        {dare.loserId ? 'Punishment Due' : 'Locked In'}
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide ring-1 ${
+                          hasOutcome
+                            ? isCurrentUserWinner
+                              ? 'bg-emerald-500/20 text-emerald-300 ring-emerald-500/40'
+                              : 'bg-rose-500/20 text-rose-300 ring-rose-500/40'
+                            : 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/30'
+                        }`}
+                      >
+                        {hasOutcome
+                          ? isCurrentUserWinner
+                            ? 'You Won'
+                            : 'You Lost'
+                          : 'Locked In'}
                       </span>
                     )}
 
@@ -299,6 +413,46 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                       </span>
                     )}
                   </div>
+
+                  {/* Automatic Win / Loss Result Banner */}
+                  {hasOutcome && dare.status !== 'pending' && (
+                    <div
+                      className={`mb-4 flex items-center justify-between rounded-xl border px-3.5 py-2.5 ${
+                        isCurrentUserWinner
+                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                          : 'border-rose-500/50 bg-rose-500/15 text-rose-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {isCurrentUserWinner ? (
+                          <Trophy className="h-4 w-4 shrink-0 text-emerald-400" />
+                        ) : (
+                          <ShieldAlert className="h-4 w-4 shrink-0 text-rose-400" />
+                        )}
+                        <div>
+                          <p className="text-xs font-extrabold uppercase tracking-wide">
+                            {isCurrentUserWinner
+                              ? 'You Won the Dare!'
+                              : 'You Lost the Dare'}
+                          </p>
+                          {computedOutcome && (
+                            <p className="text-[11px] opacity-85">
+                              Final: {computedOutcome.scoreSummary}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase ${
+                          isCurrentUserWinner
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-rose-500 text-white'
+                        }`}
+                      >
+                        {isCurrentUserWinner ? 'WIN' : 'LOSS'}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Face-Off Split Card */}
                   <div className="mb-4 grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
@@ -345,9 +499,9 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                       <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
                         <Sparkles className="h-3 w-3" /> Agreed Punishment ($0 Stakes)
                       </span>
-                      {dare.loserUsername && (
+                      {effectiveLoserUsername && (
                         <span className="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 ring-1 ring-rose-500/30">
-                          Loser: @{dare.loserUsername}
+                          Loser: @{effectiveLoserUsername}
                         </span>
                       )}
                     </div>
@@ -361,7 +515,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                     <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3.5 text-xs">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-slate-200">
-                          Proof from @{dare.loserUsername || dare.opponentUsername}:
+                          Proof from @{effectiveLoserUsername || dare.opponentUsername}:
                         </span>
                         {dare.status === 'completed' && (
                           <span className="flex items-center gap-1 font-bold text-emerald-400">
@@ -473,59 +627,20 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                 )}
 
                 {/* ============================================================
-                    2. ACTIVE DARES: Punishment Accountability Flow
+                    2. ACTIVE DARES: Automatic Score Result + Proof Flow
                    ============================================================ */}
                 {dare.status === 'active' && (
                   <div className="mt-5 border-t border-slate-800/80 pt-4">
-                    {/* Sub-step A: Nobody has declared the loser yet */}
-                    {!dare.loserId ? (
-                      <div className="space-y-2.5">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-semibold text-slate-300">
-                            {isGameFinal
-                              ? 'Game Final! Who lost this matchup?'
-                              : 'Settle Matchup Result:'}
-                          </span>
-                          <span className="text-[11px] text-slate-500">
-                            Honest accountability
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            onClick={() =>
-                              handleDeclareLoser(dare, {
-                                uid: currentUser.uid,
-                                username: currentUser.username,
-                              })
-                            }
-                            disabled={busyId === dare.id}
-                            className="flex items-center justify-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 py-2.5 text-xs font-bold text-rose-300 transition hover:bg-rose-500 hover:text-white"
-                          >
-                            <ShieldAlert className="h-3.5 w-3.5" /> I Lost (Own It)
-                          </button>
-                          <button
-                            onClick={() => {
-                              const other =
-                                dare.challengerId === currentUser.uid
-                                  ? {
-                                      uid: dare.opponentId,
-                                      username: dare.opponentUsername,
-                                    }
-                                  : {
-                                      uid: dare.challengerId,
-                                      username: dare.challengerUsername,
-                                    };
-                              handleDeclareLoser(dare, other);
-                            }}
-                            disabled={busyId === dare.id}
-                            className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-2.5 text-xs font-bold text-emerald-300 transition hover:bg-emerald-500 hover:text-slate-950"
-                          >
-                            <Trophy className="h-3.5 w-3.5" /> I Won!
-                          </button>
-                        </div>
+                    {/* Sub-step A: Game has not finished yet */}
+                    {!hasOutcome ? (
+                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs">
+                        <span className="flex items-center gap-1.5 text-slate-300">
+                          <Clock className="h-4 w-4 text-emerald-400" />
+                          Match in progress ({linkedGame?.clock || 'Upcoming'}) — winner settles automatically at final whistle.
+                        </span>
                       </div>
                     ) : isCurrentUserLoser ? (
-                      /* Sub-step B: Current user is the loser -> Must submit proof */
+                      /* Sub-step B: Current user lost -> Must submit proof */
                       proofDareId === dare.id ? (
                         <div className="space-y-3 rounded-xl border border-emerald-500/30 bg-slate-950 p-3.5">
                           <p className="text-xs font-bold text-white">
@@ -536,7 +651,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                             required
                             value={proofText}
                             onChange={(e) => setProofText(e.target.value)}
-                            placeholder="Describe what you did (e.g., 'Wore the rival jersey all day!')"
+                            placeholder="Describe what you did (e.g., 'Did all 30 pushups on call!')"
                             className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
                           />
                           <div className="flex flex-col gap-2 sm:flex-row">
@@ -571,7 +686,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                               disabled={busyId === dare.id}
                               className="flex-1 rounded-lg bg-emerald-500 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                             >
-                              Submit Proof to @{dare.winnerUsername}
+                              Submit Proof to @{effectiveWinnerUsername}
                             </button>
                             <button
                               onClick={() => setProofDareId(null)}
@@ -582,7 +697,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                           </div>
                         </div>
                       ) : (
-                        <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3">
+                        <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/40 bg-rose-500/15 p-3">
                           <div className="text-xs">
                             <p className="font-bold text-rose-200">
                               You lost this dare! Complete your punishment to earn your badge.
@@ -590,18 +705,20 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                           </div>
                           <button
                             onClick={() => setProofDareId(dare.id)}
-                            className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
+                            className="flex shrink-0 items-center gap-1.5 rounded-xl bg-rose-500 px-3.5 py-2 text-xs font-bold text-white hover:bg-rose-400"
                           >
                             <Camera className="h-3.5 w-3.5" /> Submit Proof
                           </button>
                         </div>
                       )
                     ) : (
-                      /* Sub-step C: Current user is the winner waiting on the loser */
-                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs">
-                        <span className="flex items-center gap-1.5 text-slate-300">
-                          <Clock className="h-4 w-4 text-amber-400" />
-                          Waiting for <strong className="text-white">@{dare.loserUsername}</strong> to submit punishment proof...
+                      /* Sub-step C: Current user won -> Waiting on the loser */
+                      <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs">
+                        <span className="flex items-center gap-1.5 text-emerald-200">
+                          <Trophy className="h-4 w-4 shrink-0 text-emerald-400" />
+                          <span>
+                            You won! Waiting for <strong className="text-white">@{effectiveLoserUsername}</strong> to submit punishment proof...
+                          </span>
                         </span>
                       </div>
                     )}
@@ -616,7 +733,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                     {isCurrentUserWinner ? (
                       <div className="space-y-2.5">
                         <p className="text-xs font-semibold text-amber-300">
-                          Did @{dare.loserUsername} properly complete the punishment?
+                          Did @{effectiveLoserUsername} properly complete the punishment?
                         </p>
                         <div className="flex gap-2">
                           <button
@@ -639,7 +756,7 @@ export const DaresDashboard: React.FC<DaresDashboardProps> = ({
                       <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200">
                         <Clock className="h-4 w-4 shrink-0 text-amber-400" />
                         <span>
-                          Proof submitted! Waiting for <strong>@{dare.winnerUsername}</strong> to verify and award your badge.
+                          Proof submitted! Waiting for <strong>@{effectiveWinnerUsername}</strong> to verify and award your badge.
                         </span>
                       </div>
                     )}
