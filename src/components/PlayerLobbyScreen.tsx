@@ -53,7 +53,7 @@ export const PlayerLobbyScreen: React.FC<PlayerLobbyScreenProps> = ({ onJoined }
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
           <span>
             {isSupabaseConfigured
-              ? 'Live Cloud Multiplayer Active: Create a handle on your device and have your friend join with their handle on theirs!'
+              ? 'Money Problems Go Away at Dareline.ca!'
               : 'Multi-Player Ready: Pick a handle below (or open a second browser tab with another handle) to send friend requests, negotiate dares, and verify punishments.'}
           </span>
         </div>
