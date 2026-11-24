@@ -5,7 +5,7 @@ import { FriendsView } from './components/FriendsView';
 import { GameCard } from './components/GameCard';
 import { ActiveTab, Navbar } from './components/Navbar';
 import { PlayerLobbyScreen } from './components/PlayerLobbyScreen';
-import { generateMockGames } from './data/mockGames';
+import { generateMockGames, simulateFinalScore } from './data/mockGames';
 import { multiplayerStore } from './lib/multiplayerStore';
 import { authService } from './services/authService';
 import { Dare, Friendship, Game, SportLeague, UserProfile } from './types';
@@ -80,23 +80,17 @@ export function App() {
 
   const handleSimulateFinish = (gameId: string) => {
     setGames((prev) =>
-      prev.map((g) =>
-        g.id === gameId
-          ? {
-              ...g,
-              status: 'FINAL',
-              clock: 'FINAL',
-              homeTeam: {
-                ...g.homeTeam,
-                score: g.homeTeam.score || Math.floor(Math.random() * 30) + 85,
-              },
-              awayTeam: {
-                ...g.awayTeam,
-                score: g.awayTeam.score || Math.floor(Math.random() * 30) + 80,
-              },
-            }
-          : g
-      )
+      prev.map((g) => {
+        if (g.id !== gameId) return g;
+        const { homeScore, awayScore, clock } = simulateFinalScore(g);
+        return {
+          ...g,
+          status: 'FINAL',
+          clock,
+          homeTeam: { ...g.homeTeam, score: homeScore },
+          awayTeam: { ...g.awayTeam, score: awayScore },
+        };
+      })
     );
   };
 

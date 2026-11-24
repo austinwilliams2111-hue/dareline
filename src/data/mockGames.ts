@@ -165,3 +165,66 @@ export function generateMockGames(seed: number = DEFAULT_SLATE_SEED): Game[] {
     };
   });
 }
+
+function randInt(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+export function simulateFinalScore(game: Game): {
+  homeScore: number;
+  awayScore: number;
+  clock: string;
+} {
+  let home = game.status === 'LIVE' ? game.homeTeam.score : 0;
+  let away = game.status === 'LIVE' ? game.awayTeam.score : 0;
+
+  switch (game.league) {
+    case 'NBA': {
+      home = Math.max(home + randInt(6, 22), randInt(98, 128));
+      away = Math.max(away + randInt(6, 22), randInt(98, 128));
+      if (home === away) {
+        Math.random() < 0.5 ? (home += randInt(2, 6)) : (away += randInt(2, 6));
+      }
+      return { homeScore: home, awayScore: away, clock: 'FINAL' };
+    }
+
+    case 'NFL': {
+      const footballScores = [10, 13, 14, 17, 20, 21, 23, 24, 27, 28, 30, 31, 34, 35, 38];
+      const nextScore = (current: number) => {
+        const valid = footballScores.filter((s) => s >= current);
+        return valid.length > 0
+          ? valid[randInt(0, valid.length - 1)]
+          : current + (Math.random() < 0.7 ? 7 : 3);
+      };
+
+      home = nextScore(home);
+      away = nextScore(away);
+
+      if (home === away) {
+        Math.random() < 0.5 ? (home += 3) : (away += 7);
+      }
+      return { homeScore: home, awayScore: away, clock: 'FINAL' };
+    }
+
+    case 'NHL': {
+      home = Math.max(home + randInt(0, 2), randInt(1, 5));
+      away = Math.max(away + randInt(0, 2), randInt(1, 5));
+      let clock = 'FINAL';
+      if (home === away) {
+        Math.random() < 0.5 ? (home += 1) : (away += 1);
+        clock = Math.random() < 0.6 ? 'FINAL/OT' : 'FINAL/SO';
+      }
+      return { homeScore: home, awayScore: away, clock };
+    }
+
+    case 'Premier League': {
+      const soccerGoals = [0, 0, 1, 1, 1, 2, 2, 3, 4];
+      home = Math.max(home + randInt(0, 1), soccerGoals[randInt(0, soccerGoals.length - 1)]);
+      away = Math.max(away + randInt(0, 1), soccerGoals[randInt(0, soccerGoals.length - 1)]);
+      if (home === away) {
+        Math.random() < 0.5 ? (home += 1) : (away += 1);
+      }
+      return { homeScore: home, awayScore: away, clock: 'FT' };
+    }
+  }
+}
