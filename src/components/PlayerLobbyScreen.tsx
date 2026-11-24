@@ -43,9 +43,9 @@ export const PlayerLobbyScreen: React.FC<PlayerLobbyScreenProps> = ({ onJoined }
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40">
             <Flame className="h-6 w-6" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">Dareline Multiplayer</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Dareline</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Friendly peer-to-peer sports dares. Zero money, 100% pride.
+            Friendly sports dares. Bet Your Ego, Not Your Wallet.
           </p>
         </div>
 
