@@ -8,6 +8,7 @@ import { PlayerLobbyScreen } from './components/PlayerLobbyScreen';
 import { generateMockGames, simulateFinalScore } from './data/mockGames';
 import { multiplayerStore } from './lib/multiplayerStore';
 import { authService } from './services/authService';
+import { fetchRealGames } from './services/espnService';
 import { Dare, Friendship, Game, SportLeague, UserProfile } from './types';
 
 export function App() {
@@ -15,12 +16,36 @@ export function App() {
   const [booting, setBooting] = useState(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('games');
 
+  const [useRealData, setUseRealData] = useState(true);
+  const [loadingGames, setLoadingGames] = useState(false);
   const [games, setGames] = useState<Game[]>(() => generateMockGames());
   const [selectedLeague, setSelectedLeague] = useState<'ALL' | SportLeague>('ALL');
   const [challengeGame, setChallengeGame] = useState<Game | null>(null);
 
   const [dares, setDares] = useState<Dare[]>([]);
   const [friendships, setFriendships] = useState<Friendship[]>([]);
+
+  const loadGames = useCallback(async () => {
+    if (!useRealData) {
+      setGames(generateMockGames());
+      return;
+    }
+    setLoadingGames(true);
+    try {
+      const { games: fetched } = await fetchRealGames();
+      setGames(fetched);
+    } finally {
+      setLoadingGames(false);
+    }
+  }, [useRealData]);
+
+  // Fetch games on load, when toggling Live/Demo mode, and every 45s in Live ESPN mode
+  useEffect(() => {
+    loadGames();
+    if (!useRealData) return;
+    const interval = setInterval(loadGames, 45_000);
+    return () => clearInterval(interval);
+  }, [loadGames, useRealData]);
 
   const syncUserData = useCallback(async (uid: string) => {
     try {
@@ -38,7 +63,6 @@ export function App() {
     }
   }, []);
 
-  // Restore active tab session if refreshed
   useEffect(() => {
     authService
       .restoreSession()
@@ -51,7 +75,6 @@ export function App() {
       .finally(() => setBooting(false));
   }, [syncUserData]);
 
-  // Subscribe to realtime cross-device (Supabase) or cross-tab (BroadcastChannel) updates
   useEffect(() => {
     if (!userProfile) return;
     syncUserData(userProfile.uid);
@@ -63,7 +86,7 @@ export function App() {
 
   const handleJoined = (profile: UserProfile) => {
     setUserProfile(profile);
-    setGames(generateMockGames());
+    loadGames();
     setSelectedLeague('ALL');
     syncUserData(profile.uid);
   };
@@ -71,7 +94,7 @@ export function App() {
   const handleSwitchPlayer = () => {
     authService.leaveSession();
     setUserProfile(null);
-    setGames(generateMockGames());
+    loadGames();
     setSelectedLeague('ALL');
     setDares([]);
     setFriendships([]);
@@ -114,7 +137,6 @@ export function App() {
         : { uid: f.requesterId, username: f.requesterUsername }
     );
 
-  // Badge count for dares requiring the current user's action (pending invite, proof due, or proof review)
   const actionRequiredDaresCount = dares.filter(
     (d) =>
       (d.status === 'pending' && d.opponentId === userProfile.uid) ||
@@ -147,9 +169,25 @@ export function App() {
           <div className="space-y-6">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
               <div>
-                <h1 className="text-2xl font-bold tracking-tight text-white">
-                  Live & Upcoming Matchups
-                </h1>
+                <div className="flex items-center gap-2.5">
+                  <h1 className="text-2xl font-bold tracking-tight text-white">
+                    Live & Upcoming Matchups
+                  </h1>
+                  <button
+                    onClick={() => setUseRealData((prev) => !prev)}
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide ring-1 transition ${
+                      useRealData
+                        ? 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/40 hover:bg-emerald-500/25'
+                        : 'bg-amber-500/15 text-amber-300 ring-amber-500/40 hover:bg-amber-500/25'
+                    }`}
+                  >
+                    {useRealData
+                      ? loadingGames
+                        ? 'Syncing ESPN...'
+                        : '● Live ESPN Feed'
+                      : 'Demo Slate'}
+                  </button>
+                </div>
                 <p className="text-sm text-slate-400">
                   Pick a game, call your shot, and stake a harmless creative dare.
                 </p>
